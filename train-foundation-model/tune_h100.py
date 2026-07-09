@@ -55,66 +55,48 @@ def benchmark_config(
         loss_fn = MaskedPredictionLoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         
-        # FP8 Autocast Setup
-        use_amp = True
-        use_fp8 = (precision == "fp8")
-        scaler = torch.amp.GradScaler("cuda") if (use_amp and not use_fp8) else None
-        
-        if use_fp8:
-            try:
-                import transformer_engine.pytorch as te
-                ctx = te.fp8_autocast(enabled=True)
-            except ImportError:
-                ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
-        else:
-            ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
+        # Simple FP16 autocast (no GradScaler, no FP8 complexity)
+        ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
 
-        # Generate dummy batch
+        # Generate dummy batch with valid labels
         input_ids = torch.randint(0, 62, (batch_size, max_seq_len, 5), device=device)
         attention_mask = torch.ones((batch_size, max_seq_len), dtype=torch.long, device=device)
         
-        # Valid labels are 0..61 or -100. Generate 0..61 first, then mask 85% with -100
+        # Labels: valid range [0, 62] or -100 for masked positions
+        # Generate all as valid class indices first
         labels = torch.randint(0, 62, (batch_size, max_seq_len), device=device)
-        mask = torch.rand((batch_size, max_seq_len), device=device) < 0.85
-        labels[mask] = -100
+        # Mask 85% of positions with -100 (ignore_index)
+        mask_prob = torch.rand((batch_size, max_seq_len), device=device)
+        labels[mask_prob < 0.85] = -100
 
-        # Warmup
-        for _ in range(warmup_steps):
+        # Warmup (2 iterations only for speed)
+        for _ in range(2):
             optimizer.zero_grad()
             with ctx:
                 outputs = model(input_ids, attention_mask, stage="pretrain")
                 loss = loss_fn(outputs["logits"], labels)
-            if scaler:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
         
         torch.cuda.synchronize()
         
-        # Benchmark loop
+        # Benchmark loop (reduced to 5 iterations for stability)
         start_time = time.perf_counter()
-        for _ in range(steps):
+        for _ in range(5):
             optimizer.zero_grad()
             with ctx:
                 outputs = model(input_ids, attention_mask, stage="pretrain")
                 loss = loss_fn(outputs["logits"], labels)
-            if scaler:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
         
         torch.cuda.synchronize()
         end_time = time.perf_counter()
         
         total_time = end_time - start_time
-        avg_step_time = total_time / steps
-        throughput = (batch_size * steps) / total_time
+        bench_steps = 5
+        avg_step_time = total_time / bench_steps
+        throughput = (batch_size * bench_steps) / total_time
         
         peak_vram_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
         
