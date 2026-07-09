@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -101,8 +100,7 @@ def fetch_and_store(
     tickers: list[str],
     years: int,
     db_path: str,
-    batch_size: int = 10,
-    retries: int = 3,
+    batch_size: int = 20,
 ) -> None:
     """Download OHLCV for tickers and persist to DuckDB."""
     try:
@@ -162,28 +160,13 @@ def fetch_and_store(
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i: i + batch_size]
         print(f"  Downloading batch {i // batch_size + 1}: {batch[:3]}...")
-        raw = None
-        for attempt in range(1, retries + 1):
-            try:
-                raw = yf.download(
-                    batch,
-                    start=start_str,
-                    end=end_str,
-                    auto_adjust=True,
-                    progress=False,
-                    threads=False,
-                    timeout=30,
-                )
-                break
-            except Exception as e:
-                if attempt < retries:
-                    print(f"  [WARN] Batch attempt {attempt}/{retries} failed: {e}")
-                    time.sleep(5)
-                else:
-                    print(f"  [WARN] Download failed for batch after {retries} attempts: {e}")
-                    raw = None
-                    break
-        if raw is None:
+        try:
+            raw = yf.download(
+                batch, start=start_str, end=end_str,
+                auto_adjust=True, progress=False, threads=True,
+            )
+        except Exception as e:
+            print(f"  [WARN] Download failed for batch: {e}")
             continue
 
         for ticker in batch:
@@ -273,14 +256,10 @@ def main():
     parser = argparse.ArgumentParser(description="Fetch market data into market.db")
     parser.add_argument("--tickers", default="sp500",
                         help="'sp500' or comma-separated ticker list")
-    parser.add_argument("--years", type=int, default=5,
+    parser.add_argument("--years", type=int, default=20,
                         help="Years of history to download")
     parser.add_argument("--db", default="market-data/market.db",
                         help="Output DuckDB path")
-    parser.add_argument("--batch-size", type=int, default=10,
-                        help="Number of tickers per yfinance batch")
-    parser.add_argument("--retries", type=int, default=3,
-                        help="Number of retry attempts for each batch")
     args = parser.parse_args()
 
     if args.tickers == "sp500":
@@ -289,7 +268,7 @@ def main():
         tickers = [t.strip() for t in args.tickers.split(",")]
 
     print(f"Fetching {len(tickers)} tickers, {args.years} years → {args.db}")
-    fetch_and_store(tickers, args.years, args.db, batch_size=args.batch_size, retries=args.retries)
+    fetch_and_store(tickers, args.years, args.db)
 
 
 if __name__ == "__main__":

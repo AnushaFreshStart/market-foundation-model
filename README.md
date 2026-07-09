@@ -110,4 +110,3 @@ market-foundation-model-workspace/
 | `default` | 64 | 3 | 50/30/20 | Development |
 | `market` | 128 | 4 | 80/50/30 | H100 production |
 | `market_large` | 256 | 6 | 100/60/40 | Research ablations |
-"# market-foundation-model" 

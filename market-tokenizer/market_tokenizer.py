@@ -32,7 +32,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MAX_SEQ_LEN = 60      # 60 trading days per sequence
+MAX_SEQ_LEN = 512     # 512 trading days per sequence
 N_BINS      = 10      # quantile bins for continuous features
 STEP_WIDTH  = 5       # tokens per time-step: [regime, rsi, vol, ret, atr]
 

@@ -63,6 +63,12 @@ class CreditModelTrainer:  # name kept for interface parity
 
         self.model = build_model(config).to(self.device)
 
+        # Compile model for H100 kernel optimization
+        if config.profile == "h100_saturated":
+            if self.is_main:
+                print("  Compiling model with torch.compile(mode='max-autotune')...")
+            self.model = torch.compile(self.model, mode="max-autotune")
+
         # Gradient checkpointing
         if config.gradient_checkpointing and hasattr(self.model, "gradient_checkpointing_enable"):
             self.model.gradient_checkpointing_enable()

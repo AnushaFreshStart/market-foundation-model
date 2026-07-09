@@ -65,6 +65,16 @@ PROFILES: dict[str, dict[str, Any]] = {
         "num_workers": 4, "pin_memory": True, "prefetch_factor": 2,
         "persistent_workers": True, "gradient_checkpointing": False,
     },
+    "h100_saturated": {
+        "embed_dim": 768, "n_heads": 12, "n_layers": 12,
+        "patch_size": 8, "ff_dim": 3072, "dropout": 0.1,
+        "batch_size": 2048, "learning_rate": 8e-4,
+        "pretrain_epochs": 100, "joint_epochs": 60, "finetune_epochs": 40,
+        "vocab_size": 62, "max_seq_len": 512,
+        "precision": "fp8",
+        "num_workers": 8, "pin_memory": True, "prefetch_factor": 4,
+        "persistent_workers": True, "gradient_checkpointing": False,
+    },
 }
 
 VALID_ARCHITECTURES = ("patchtst", "tft", "hybrid", "lightweight", "lstm_baseline")
