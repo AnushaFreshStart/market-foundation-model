@@ -70,6 +70,8 @@ def build_sequences(
     print(f"  Building sequences for {len(tickers)} tickers...")
 
     records = []
+    step_size = 20  # 1-month sliding window
+
     for ticker in tickers:
         tdf = df[df["ticker"] == ticker].sort_values("date").reset_index(drop=True)
         n = len(tdf)
@@ -77,38 +79,43 @@ def build_sequences(
         if n < min_seq_len:
             continue
 
-        # Use full history as one sequence (padded to MAX_SEQ_LEN)
-        seq_len = min(n, MAX_SEQ_LEN)
-        # Take the last MAX_SEQ_LEN rows (most recent window)
-        window = tdf.iloc[max(0, n - MAX_SEQ_LEN):].reset_index(drop=True)
+        # Extract sliding windows
+        for start_idx in range(0, max(1, n - MAX_SEQ_LEN + 1), step_size):
+            window = tdf.iloc[start_idx : start_idx + MAX_SEQ_LEN].reset_index(drop=True)
+            actual_len = len(window)
+            
+            if actual_len < min_seq_len:
+                continue
 
-        # Encode tokens: BOS + steps
-        tokens = np.zeros((MAX_SEQ_LEN, STEP_WIDTH), dtype=np.int64)
-        actual_len = len(window)
+            end_date = window["date"].iloc[-1].strftime("%Y-%m-%d")
+            seq_id = f"{ticker}_{end_date}"
 
-        for t, row in window.iterrows():
-            if t >= MAX_SEQ_LEN:
-                break
-            step_ids = tok.encode_step(row.to_dict())
-            tokens[t] = step_ids
+            # Encode tokens: BOS + steps
+            tokens = np.zeros((MAX_SEQ_LEN, STEP_WIDTH), dtype=np.int64)
 
-        # Mark BOS at position 0 if space
-        tokens[0, 0] = tok.bos_id
+            for t, row in window.iterrows():
+                if t >= MAX_SEQ_LEN:
+                    break
+                step_ids = tok.encode_step(row.to_dict())
+                tokens[t] = step_ids
 
-        had_crash  = (window["regime"] == "CRASH").any()
-        had_gap    = (window["regime"] == "GAP").any()
-        final_regime = window["regime"].iloc[-1] if actual_len > 0 else "FLAT"
+            # Mark BOS at position 0 if space
+            tokens[0, 0] = tok.bos_id
 
-        records.append({
-            "ticker":       ticker,
-            "seq_tokens":   tokens.flatten().tolist(),
-            "seq_len":      actual_len,
-            "obs_year_max": int(window["obs_year"].max()),
-            "obs_year_min": int(window["obs_year"].min()),
-            "final_regime": final_regime,
-            "had_crash":    bool(had_crash),
-            "had_gap":      bool(had_gap),
-        })
+            had_crash  = (window["regime"] == "CRASH").any()
+            had_gap    = (window["regime"] == "GAP").any()
+            final_regime = window["regime"].iloc[-1] if actual_len > 0 else "FLAT"
+
+            records.append({
+                "ticker":       seq_id,
+                "seq_tokens":   tokens.flatten().tolist(),
+                "seq_len":      actual_len,
+                "obs_year_max": int(window["obs_year"].max()),
+                "obs_year_min": int(window["obs_year"].min()),
+                "final_regime": final_regime,
+                "had_crash":    bool(had_crash),
+                "had_gap":      bool(had_gap),
+            })
 
     seq_df = pd.DataFrame(records)
     out_path = out_dir / "market_sequences.parquet"

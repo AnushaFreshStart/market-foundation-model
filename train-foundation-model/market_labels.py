@@ -61,35 +61,31 @@ def load_market_label_maps(
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    # --- Direction label ---
-    # For each ticker, compute cumulative log return over next horizon_days
-    # from the last available observation (used as the finetune target)
     direction_map: dict[str, int] = {}
+    vol_map: dict[str, int] = {}
+    
+    # Calculate global tercile boundary for volatility
+    vol_values = df["vol_5d"].dropna().values
+    tercile_boundary = float(np.percentile(vol_values, 66.67)) if len(vol_values) > 0 else 0.0
+
     for ticker, tdf in df.groupby("ticker"):
         tdf = tdf.reset_index(drop=True)
         n = len(tdf)
         if n < horizon_days + 1:
             continue
-        # Use the last full window where horizon is available
-        # Forward log return: sum of log_ret[t+1..t+horizon]
-        future_rets = tdf["log_ret"].iloc[-(horizon_days):].sum()
-        direction_map[str(ticker)] = int(future_rets > direction_threshold)
-
-    # --- Volatility label ---
-    # Compute each ticker's most recent vol_5d, label top tercile as 1
-    vol_map: dict[str, int] = {}
-    last_vols: dict[str, float] = {}
-    for ticker, tdf in df.groupby("ticker"):
-        tdf = tdf.reset_index(drop=True)
-        if len(tdf) == 0:
-            continue
-        last_vols[str(ticker)] = float(tdf["vol_5d"].iloc[-1])
-
-    if last_vols:
-        vol_values = np.array(list(last_vols.values()))
-        tercile_boundary = float(np.percentile(vol_values, 66.67))
-        for ticker, vol in last_vols.items():
-            vol_map[ticker] = int(vol >= tercile_boundary)
+            
+        # Calculate future 5-day return for every day
+        tdf['future_ret'] = tdf['log_ret'].iloc[::-1].rolling(horizon_days, min_periods=horizon_days).sum().iloc[::-1].shift(-1)
+        
+        for _, row in tdf.iterrows():
+            date_str = row["date"].strftime("%Y-%m-%d")
+            seq_id = f"{ticker}_{date_str}"
+            
+            if pd.notna(row['future_ret']):
+                direction_map[seq_id] = int(row['future_ret'] > direction_threshold)
+            
+            if pd.notna(row['vol_5d']):
+                vol_map[seq_id] = int(row['vol_5d'] >= tercile_boundary)
 
     n_up = sum(direction_map.values())
     n_high_vol = sum(vol_map.values())
