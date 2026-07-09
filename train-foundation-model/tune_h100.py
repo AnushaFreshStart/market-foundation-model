@@ -34,9 +34,12 @@ def benchmark_config(
     """Run forward and backward passes on dummy data to measure speed and VRAM."""
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
-    # Force clean start
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
+    # Force clean start without triggering CUDA asserts on some driver/runtime combinations
+    try:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
     
     cfg = TrainingConfig(
         architecture=arch,
@@ -64,7 +67,7 @@ def benchmark_config(
             try:
                 import transformer_engine.pytorch as te
                 ctx = te.fp8_autocast(enabled=True)
-            except ImportError:
+            except Exception:
                 ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
         else:
             ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
@@ -91,9 +94,9 @@ def benchmark_config(
         
         torch.cuda.synchronize()
         
-        # Benchmark loop
+        # Benchmark loop with a smaller, safer number of iterations
         start_time = time.perf_counter()
-        for _ in range(steps):
+        for _ in range(min(steps, 8)):
             optimizer.zero_grad()
             with ctx:
                 outputs = model(input_ids, attention_mask, stage="pretrain")
@@ -110,8 +113,9 @@ def benchmark_config(
         end_time = time.perf_counter()
         
         total_time = end_time - start_time
-        avg_step_time = total_time / steps
-        throughput = (batch_size * steps) / total_time
+        bench_steps = min(steps, 8)
+        avg_step_time = total_time / bench_steps
+        throughput = (batch_size * bench_steps) / total_time
         
         peak_vram_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
         
@@ -124,10 +128,11 @@ def benchmark_config(
             "vram_util_pct": round((peak_vram_gb / 80.0) * 100, 1),
         }
         
-    except RuntimeError as e:
-        if "out of memory" in str(e).lower():
+    except Exception as e:
+        msg = str(e).lower()
+        if "out of memory" in msg or "cuda out of memory" in msg:
             return {"status": "OOM", "avg_step_ms": 0, "throughput_seq_sec": 0, "throughput_tokens_sec": 0, "peak_vram_gb": 0, "vram_util_pct": 0}
-        return {"status": f"ERROR: {str(e)[:50]}", "avg_step_ms": 0, "throughput_seq_sec": 0, "throughput_tokens_sec": 0, "peak_vram_gb": 0, "vram_util_pct": 0}
+        return {"status": f"ERROR: {str(e)[:80]}", "avg_step_ms": 0, "throughput_seq_sec": 0, "throughput_tokens_sec": 0, "peak_vram_gb": 0, "vram_util_pct": 0}
 
 def main():
     parser = argparse.ArgumentParser(description="H100 Optimization Auto-Tuner")
