@@ -93,7 +93,7 @@ class RunManager:
                     "architecture": config.get("architecture", "?"),
                     "strategy": config.get("strategy", "?"),
                     "profile": config.get("profile", "?"),
-                    "auc_roc_direction: default_m.get("auc_roc_direction", 0.5),,
+                    "auc_roc_direction: default_m.get("auc_roc_direction", 0.5),
                     "gini_default": default_m.get("gini", 0),
                     "total_params": results.get("total_params", 0),
                     "total_time_s": results.get("total_time_s", 0),
