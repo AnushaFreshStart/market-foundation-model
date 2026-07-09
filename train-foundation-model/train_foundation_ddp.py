@@ -40,7 +40,7 @@ def main():
                         choices=["full", "pretrain_only", "pretrain_finetune",
                                  "finetune_only", "joint_finetune"])
     parser.add_argument("--profile",         default="market",
-                        choices=["default", "small", "fast", "market", "market_large", "custom"])
+                        choices=["default", "small", "fast", "market", "market_large", "custom", "h100_saturated"])
     parser.add_argument("--domain",          default="market", choices=["market", "credit"])
     parser.add_argument("--embed-dim",       type=int,   default=None)
     parser.add_argument("--n-heads",         type=int,   default=None)
