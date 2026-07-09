@@ -23,7 +23,7 @@ import duckdb
 
 
 # ---------------------------------------------------------------------------
-# S&P 500 ticker list (abridged representative set — extend as needed)
+# Extended S&P 500 + NASDAQ 100 Ticker List (~150 liquid components)
 # ---------------------------------------------------------------------------
 SP500_TICKERS = [
     "AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","BRK-B","JPM","JNJ",
@@ -36,6 +36,12 @@ SP500_TICKERS = [
     "LMT","GD","BA","NOC","HII","L3H","TDG","HWM","TXT","WWD",
     "CAT","DE","EMR","ETN","GE","ITW","PH","ROK","SWK","XYL",
     "CVS","CI","HUM","ELV","CNC","MOH","DVA","HCA","UHS","THC",
+    "AMD","INTU","ISRG","MDLZ","GILD","AMGN","ADI","BKNG","REGN","CSCO",
+    "ADSK","MELI","PANW","SNPS","CDNS","MU","NXPI","KLAC","ASML","MAR",
+    "LRCX","KDP","ORLY","CTAS","FTNT","MNST","PCAR","PAYX","CPRT","DXCM",
+    "VRSK","IDXX","AEP","EXC","KHC","CTSH","XEL","BKR","GEHC","ON",
+    "MCHP","FAST","ANSS","CDW","TEAM","DDOG","WDAY","ROP","ADWR","TEAM",
+    "SYK","EL","TGT","DG","TJX","ORCL","CRM","AMAT","WBA","PDD"
 ]
 
 
