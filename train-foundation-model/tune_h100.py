@@ -58,17 +58,13 @@ def benchmark_config(
         loss_fn = MaskedPredictionLoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         
-        # FP8 Autocast Setup
+        # Use a broad H100-safe autocast path. Avoid Transformer Engine FP8 here
+        # because it can trigger driver/runtime issues in this environment.
         use_amp = True
         use_fp8 = (precision == "fp8")
-        scaler = torch.amp.GradScaler("cuda") if (use_amp and not use_fp8) else None
-        
+        scaler = None
         if use_fp8:
-            try:
-                import transformer_engine.pytorch as te
-                ctx = te.fp8_autocast(enabled=True)
-            except Exception:
-                ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
+            ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
         else:
             ctx = torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
 
@@ -84,13 +80,8 @@ def benchmark_config(
             with ctx:
                 outputs = model(input_ids, attention_mask, stage="pretrain")
                 loss = loss_fn(outputs["logits"], labels)
-            if scaler:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
         
         torch.cuda.synchronize()
         
@@ -101,13 +92,8 @@ def benchmark_config(
             with ctx:
                 outputs = model(input_ids, attention_mask, stage="pretrain")
                 loss = loss_fn(outputs["logits"], labels)
-            if scaler:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
         
         torch.cuda.synchronize()
         end_time = time.perf_counter()
