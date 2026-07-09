@@ -220,11 +220,10 @@ class CreditModelTrainer:  # name kept for interface parity
                     loss.backward()
                     nn.utils.clip_grad_norm_(self._raw_model.parameters(), 1.0)
                     optimizer.step()
+                scheduler.step()
 
                 epoch_loss += loss.item()
                 n_batches  += 1
-
-            scheduler.step()
             avg_train = epoch_loss / max(n_batches, 1)
             train_losses.append(round(avg_train, 6))
 

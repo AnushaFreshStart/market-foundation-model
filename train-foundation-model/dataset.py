@@ -78,6 +78,17 @@ class MarketSequenceDataset(Dataset):
         seq_len   = int(row["seq_len"])
         flat      = list(row["seq_tokens"])
 
+        # Validate sequence length before reshape
+        expected_elements = MAX_SEQ_LEN * STEP_WIDTH
+        actual_elements = len(flat)
+        if actual_elements != expected_elements:
+            raise ValueError(
+                f"Ticker {entity_id} (idx={idx}): Expected {expected_elements} elements "
+                f"({MAX_SEQ_LEN} × {STEP_WIDTH}), got {actual_elements} "
+                f"({actual_elements // STEP_WIDTH} timesteps). "
+                f"seq_len={seq_len}. Dataset may be too small for MAX_SEQ_LEN={MAX_SEQ_LEN}."
+            )
+
         tokens    = np.array(flat, dtype=np.int64).reshape(MAX_SEQ_LEN, STEP_WIDTH)
         attn_mask = np.zeros(MAX_SEQ_LEN, dtype=np.int64)
         attn_mask[:seq_len] = 1
@@ -148,6 +159,20 @@ class MarketSequenceDataset(Dataset):
             if test_mask.sum() > 0:
                 train_df = self.df[train_mask].reset_index(drop=True)
                 test_df  = self.df[test_mask].reset_index(drop=True)
+                
+                # Validate minimum dataset sizes
+                min_size = MAX_SEQ_LEN
+                if len(train_df) < min_size:
+                    raise ValueError(
+                        f"Training split too small: {len(train_df)} rows < {min_size} (MAX_SEQ_LEN). "
+                        f"Cannot create {MAX_SEQ_LEN}-step sequences. Reduce MAX_SEQ_LEN or expand dataset."
+                    )
+                if len(test_df) < min_size:
+                    raise ValueError(
+                        f"Test split too small: {len(test_df)} rows < {min_size} (MAX_SEQ_LEN). "
+                        f"Cannot create {MAX_SEQ_LEN}-step sequences. Reduce MAX_SEQ_LEN or expand dataset."
+                    )
+                
                 print(f"  OOT split: train={len(train_df):,}, test={len(test_df):,}")
                 return _SubsetDataset(self, train_df), _SubsetDataset(self, test_df)
 
@@ -181,6 +206,17 @@ class _SubsetDataset(Dataset):
         entity_id = str(row["ticker"])
         seq_len   = int(row["seq_len"])
         flat      = list(row["seq_tokens"])
+
+        # Validate sequence length before reshape
+        expected_elements = MAX_SEQ_LEN * STEP_WIDTH
+        actual_elements = len(flat)
+        if actual_elements != expected_elements:
+            raise ValueError(
+                f"Ticker {entity_id} (subset idx={idx}): Expected {expected_elements} elements "
+                f"({MAX_SEQ_LEN} × {STEP_WIDTH}), got {actual_elements} "
+                f"({actual_elements // STEP_WIDTH} timesteps). "
+                f"seq_len={seq_len}. Dataset may be too small for MAX_SEQ_LEN={MAX_SEQ_LEN}."
+            )
 
         tokens    = np.array(flat, dtype=np.int64).reshape(MAX_SEQ_LEN, STEP_WIDTH)
         attn_mask = np.zeros(MAX_SEQ_LEN, dtype=np.int64)
