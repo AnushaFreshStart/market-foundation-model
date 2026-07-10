@@ -77,6 +77,7 @@ class CreditModelTrainer:  # name kept for interface parity
         if world_size > 1:
             self.model = torch.nn.parallel.DistributedDataParallel(
                 self.model, device_ids=[rank], output_device=rank,
+                find_unused_parameters=True,  # Allow multi-stage training (different heads per stage)
             )
 
         self.evaluator        = ModelEvaluator()
