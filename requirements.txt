@@ -19,6 +19,7 @@ duckdb==0.9.2
 
 # Financial Data
 yfinance==0.2.32
+pandas-datareader>=0.10.0
 requests>=2.31.0
 lxml>=5.0.0
 
