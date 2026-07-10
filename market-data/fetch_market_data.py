@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import random
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -156,9 +158,17 @@ def fetch_and_store(
 
     all_vols: list[float] = []
 
+    def wait_before_next_request(min_seconds: float = 6.0, max_seconds: float = 12.0) -> None:
+        delay = random.uniform(min_seconds, max_seconds)
+        print(f"  Sleeping {delay:.1f}s before next Yahoo request...")
+        time.sleep(delay)
+
     # Batch download
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i: i + batch_size]
+        if i > 0:
+            wait_before_next_request()
+
         print(f"  Downloading batch {i // batch_size + 1}: {batch[:3]}...")
         try:
             raw = yf.download(
@@ -167,6 +177,7 @@ def fetch_and_store(
             )
         except Exception as e:
             print(f"  [WARN] Download failed for batch: {e}")
+            wait_before_next_request(15.0, 30.0)
             continue
 
         for ticker in batch:
