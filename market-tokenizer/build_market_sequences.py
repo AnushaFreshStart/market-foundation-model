@@ -46,52 +46,52 @@ def _encode_window_gpu(
 ) -> np.ndarray:
     """
     GPU-accelerated vectorized quantile encoding.
-    Encodes all 60 days at once instead of per-row.
+    Encodes all 60 days at once instead of per-row using vectorized searchsorted.
     
     Returns: tokens array (60, 5) of token IDs
     """
     n_rows = len(window)
-    tokens = torch.zeros((MAX_SEQ_LEN, STEP_WIDTH), dtype=torch.int64, device=device)
+    tokens = np.zeros((MAX_SEQ_LEN, STEP_WIDTH), dtype=np.int64)
     
     # Extract feature columns for quantile binning
-    features = ["rsi_14", "vol_5d", "ret_5d", "mcap_tier", "atr_14"]
-    feature_data = window[features].values  # (n_rows, 5)
+    features = ["rsi_14", "vol_5d", "ret_5d", "atr_14"]
+    feature_names = ["RSI", "VOL", "RET", "ATR"]
     
-    # Convert to torch tensor on GPU
-    x = torch.from_numpy(feature_data).float().to(device)  # (n_rows, 5)
+    # Get bin edges from tokenizer
+    bin_edges_dict = tok.bin_edges  # Dict: {"RSI": [edges...], "VOL": [...], ...}
     
-    # Get quantile bins from tokenizer for each feature
-    # tok.quantiles dict: {feature_name: [q0, q1, ..., q9]}
-    quantile_ids = torch.zeros((n_rows, 5), dtype=torch.int64, device=device)
+    for col_idx, (feat_col, feat_name) in enumerate(zip(features, feature_names)):
+        if feat_col not in window.columns or feat_name not in bin_edges_dict:
+            continue
+        
+        values = window[feat_col].values  # (n_rows,)
+        edges = bin_edges_dict[feat_name]  # list of bin edge values
+        
+        # GPU-accelerated searchsorted
+        values_tensor = torch.from_numpy(values.astype(np.float32)).to(device)
+        edges_tensor = torch.from_numpy(np.array(edges[1:-1], dtype=np.float32)).to(device)
+        
+        # searchsorted finds which bin each value belongs to
+        bin_indices = torch.searchsorted(edges_tensor, values_tensor, right=False)
+        bin_indices = torch.clamp(bin_indices, 0, len(edges) - 2).cpu().numpy()
+        
+        # Convert bin index to token ID
+        for t in range(min(n_rows, MAX_SEQ_LEN)):
+            bin_idx = bin_indices[t]
+            token_name = f"{feat_name}_Q{bin_idx}"
+            tokens[t, col_idx + 1] = tok.vocab[token_name]
     
-    feature_col_map = {f: i for i, f in enumerate(features)}
-    for col_idx, feat in enumerate(features):
-        if feat in tok.quantiles:
-            qbins = torch.from_numpy(np.array(tok.quantiles[feat], dtype=np.float32)).to(device)
-            # Searchsorted: which bin does each value fall into
-            bins = torch.searchsorted(qbins, x[:, col_idx], right=False)
-            # Clamp to valid range [0, len(qbins)-1]
-            bins = torch.clamp(bins, 0, len(qbins) - 1)
-            # Convert bin index to token ID (offset by regime vocab)
-            quantile_ids[:, col_idx] = bins + 12  # 5 special + 7 regime tokens
-    
-    # Add regime tokens (position 0)
-    regime_col = window["regime"].values
-    regime_ids = []
-    for r in regime_col:
-        rid = tok.regime_vocab.get(r, tok.regime_vocab.get("FLAT", 5))
-        regime_ids.append(rid)
-    regime_ids = torch.tensor(regime_ids, dtype=torch.int64, device=device)
-    
-    # Assemble tokens: [regime_id, rsi_id, vol_id, ret_id, mcap_id] per step
+    # Encode regime tokens (position 0) using CPU (already fast)
     for t in range(min(n_rows, MAX_SEQ_LEN)):
-        tokens[t, 0] = regime_ids[t]
-        tokens[t, 1:] = quantile_ids[t]
+        row = window.iloc[t]
+        regime = str(row.get("regime", "FLAT"))
+        regime_id = tok.vocab[regime] if regime in ["BULL", "CORR", "BEAR", "CRASH", "RECOV", "FLAT", "GAP"] else tok.vocab["FLAT"]
+        tokens[t, 0] = regime_id
     
     # Mark BOS at position 0
     tokens[0, 0] = tok.bos_id
     
-    return tokens.cpu().numpy()
+    return tokens
 
 
 def build_sequences(
