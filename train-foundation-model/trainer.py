@@ -66,8 +66,8 @@ class CreditModelTrainer:  # name kept for interface parity
         # Compile model for H100 kernel optimization
         if config.profile == "h100_saturated":
             if self.is_main:
-                print("  Compiling model with torch.compile(mode='max-autotune')...")
-            self.model = torch.compile(self.model, mode="max-autotune")
+                print("  Compiling model with torch.compile()...")
+            self.model = torch.compile(self.model)
 
         # Gradient checkpointing
         if config.gradient_checkpointing and hasattr(self.model, "gradient_checkpointing_enable"):
@@ -220,10 +220,11 @@ class CreditModelTrainer:  # name kept for interface parity
                     loss.backward()
                     nn.utils.clip_grad_norm_(self._raw_model.parameters(), 1.0)
                     optimizer.step()
-                scheduler.step()
 
                 epoch_loss += loss.item()
                 n_batches  += 1
+
+            scheduler.step()
             avg_train = epoch_loss / max(n_batches, 1)
             train_losses.append(round(avg_train, 6))
 
