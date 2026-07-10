@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import random
-import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -103,13 +101,12 @@ def fetch_and_store(
     years: int,
     db_path: str,
     batch_size: int = 20,
+    client: str = "yfinance",
+    delay: float = 0.0,
 ) -> None:
     """Download OHLCV for tickers and persist to DuckDB."""
-    try:
-        import yfinance as yf
-    except ImportError:
-        raise ImportError("Run: pip install yfinance")
-
+    import time
+    
     end_date = datetime.today()
     start_date = end_date - timedelta(days=years * 365 + 30)
     start_str = start_date.strftime("%Y-%m-%d")
@@ -158,39 +155,63 @@ def fetch_and_store(
 
     all_vols: list[float] = []
 
-    def wait_before_next_request(min_seconds: float = 6.0, max_seconds: float = 12.0) -> None:
-        delay = random.uniform(min_seconds, max_seconds)
-        print(f"  Sleeping {delay:.1f}s before next Yahoo request...")
-        time.sleep(delay)
-
     # Batch download
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i: i + batch_size]
-        if i > 0:
-            wait_before_next_request()
-
-        print(f"  Downloading batch {i // batch_size + 1}: {batch[:3]}...")
-        try:
-            raw = yf.download(
-                batch, start=start_str, end=end_str,
-                auto_adjust=True, progress=False, threads=True,
-            )
-        except Exception as e:
-            print(f"  [WARN] Download failed for batch: {e}")
-            wait_before_next_request(15.0, 30.0)
-            continue
+        print(f"  Downloading batch {i // batch_size + 1}/{math.ceil(len(tickers)/batch_size)}: {batch[:3]}...")
+        
+        if client == "yfinance":
+            import yfinance as yf
+            try:
+                raw = yf.download(
+                    batch, start=start_str, end=end_str,
+                    auto_adjust=True, progress=False, threads=True,
+                )
+                time.sleep(delay)
+            except Exception as e:
+                print(f"  [WARN] Download failed for batch: {e}")
+                time.sleep(delay)
+                continue
+        elif client == "stooq":
+            # Stooq doesn't batch well, so we download sequentially
+            import pandas_datareader.data as web
+            raw = {}
+            for ticker in batch:
+                # Add .US suffix if missing for Stooq US equities
+                stooq_ticker = f"{ticker}.US" if not ticker.endswith(".US") else ticker
+                try:
+                    df_stooq = web.DataReader(stooq_ticker, "stooq", start_str, end_str)
+                    df_stooq = df_stooq.sort_index()
+                    raw[ticker] = df_stooq
+                except Exception as e:
+                    print(f"    [WARN] stooq failed for {stooq_ticker}: {e}")
+                time.sleep(delay)
 
         for ticker in batch:
             try:
-                if len(batch) == 1:
-                    df = raw.copy()
-                    df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-                else:
-                    if ticker not in raw.columns.get_level_values(1):
+                if client == "yfinance":
+                    if len(batch) == 1:
+                        df = raw.copy()
+                        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+                    else:
+                        if ticker not in raw.columns.get_level_values(1):
+                            continue
+                        df = raw.xs(ticker, axis=1, level=1).copy()
+                elif client == "stooq":
+                    if ticker not in raw:
                         continue
-                    df = raw.xs(ticker, axis=1, level=1).copy()
+                    df = raw[ticker].copy()
+                    # Stooq columns are Open, High, Low, Close, Volume
+                    df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
 
-                df = df.dropna(subset=["Close"])
+                # Use .columns directly or fallback to standard capitalization
+                if "Close" in df.columns:
+                    df = df.dropna(subset=["Close"])
+                elif "close" in df.columns:
+                    df = df.dropna(subset=["close"])
+                else:
+                    continue
+                    
                 df.index = pd.to_datetime(df.index).normalize()
 
                 # Rename columns
@@ -267,10 +288,14 @@ def main():
     parser = argparse.ArgumentParser(description="Fetch market data into market.db")
     parser.add_argument("--tickers", default="sp500",
                         help="'sp500' or comma-separated ticker list")
-    parser.add_argument("--years", type=int, default=20,
+    parser.add_argument("--years", type=int, default=5,
                         help="Years of history to download")
     parser.add_argument("--db", default="market-data/market.db",
                         help="Output DuckDB path")
+    parser.add_argument("--client", default="yfinance", choices=["yfinance", "stooq"],
+                        help="Data client to use (yfinance or stooq)")
+    parser.add_argument("--delay", type=float, default=0.0,
+                        help="Time delay in seconds between batches/tickers to avoid blocking")
     args = parser.parse_args()
 
     if args.tickers == "sp500":
@@ -278,8 +303,8 @@ def main():
     else:
         tickers = [t.strip() for t in args.tickers.split(",")]
 
-    print(f"Fetching {len(tickers)} tickers, {args.years} years → {args.db}")
-    fetch_and_store(tickers, args.years, args.db)
+    print(f"Fetching {len(tickers)} tickers, {args.years} years → {args.db} (Client: {args.client}, Delay: {args.delay}s)")
+    fetch_and_store(tickers, args.years, args.db, client=args.client, delay=args.delay)
 
 
 if __name__ == "__main__":
