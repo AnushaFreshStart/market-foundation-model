@@ -96,22 +96,129 @@ def classify_regime(ret_20d: float, vol_20d: float, rsi: float,
 # Main ingestion
 # ---------------------------------------------------------------------------
 
+def download_from_kaggle(dest_dir: Path) -> Path:
+    """Download S&P 500 dataset from Kaggle. Tries Method A, fallbacks to Method B."""
+    import sys
+    import subprocess
+    import shutil
+    
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    csv_dest = dest_dir / "all_stocks_5yr.csv"
+    if csv_dest.exists():
+        print(f"  Found cached dataset at {csv_dest}")
+        return csv_dest
+
+    # Method A: Try standard kaggle API
+    try:
+        print("  Attempting Method A (kaggle API)...")
+        try:
+            import kaggle
+        except ImportError:
+            print("  Installing kaggle package...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "kaggle"])
+            import kaggle
+            
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        api = KaggleApi()
+        api.authenticate()
+        api.dataset_download_files("camnugent/sandp500", path=str(dest_dir), unzip=True)
+        print("  Method A successful!")
+        return csv_dest
+    except Exception as e:
+        print(f"  Method A failed: {e}. Trying Method B (kagglehub)...")
+
+    # Method B: Try kagglehub
+    try:
+        try:
+            import kagglehub
+        except ImportError:
+            print("  Installing kagglehub package...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "kagglehub"])
+            import kagglehub
+
+        download_path = kagglehub.dataset_download("camnugent/sandp500")
+        print(f"  Method B successful! Downloaded to {download_path}")
+        
+        src_file = Path(download_path) / "all_stocks_5yr.csv"
+        if not src_file.exists():
+            csvs = list(Path(download_path).glob("*.csv"))
+            if csvs:
+                src_file = csvs[0]
+            else:
+                raise FileNotFoundError("Could not find any CSV file in downloaded dataset")
+
+        shutil.copy(src_file, csv_dest)
+        return csv_dest
+    except Exception as e2:
+        raise RuntimeError(f"All Kaggle download methods failed: {e2}")
+
+
+def download_from_git(dest_dir: Path) -> Path:
+    """Download S&P 500 dataset directly from GitHub."""
+    import urllib.request
+    
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    csv_dest = dest_dir / "all_stocks_5yr.csv"
+    if csv_dest.exists():
+        print(f"  Found cached dataset at {csv_dest}")
+        return csv_dest
+
+    print("  Downloading S&P 500 dataset from GitHub raw source...")
+    url = "https://raw.githubusercontent.com/CNuge/kaggle-code/master/stock_data/all_stocks_5yr.csv"
+    try:
+        urllib.request.urlretrieve(url, str(csv_dest))
+        print("  GitHub download successful!")
+        return csv_dest
+    except Exception as e:
+        raise RuntimeError(f"GitHub download failed: {e}")
+
+
+def download_from_huggingface(dest_dir: Path) -> Path:
+    """Download S&P 500 dataset from Hugging Face."""
+    import sys
+    import subprocess
+    import shutil
+    
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    csv_dest = dest_dir / "all_stocks_5yr.csv"
+    if csv_dest.exists():
+        print(f"  Found cached dataset at {csv_dest}")
+        return csv_dest
+
+    print("  Attempting download from Hugging Face Hub...")
+    try:
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            print("  Installing huggingface_hub package...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "huggingface_hub"])
+            from huggingface_hub import hf_hub_download
+
+        # Using a public HF dataset containing S&P 500 historical prices
+        download_path = hf_hub_download(
+            repo_id="Sashank-810/crisisnet-dataset",
+            filename="SP500.csv",
+            repo_type="dataset"
+        )
+        print(f"  Hugging Face download successful! Downloaded to {download_path}")
+        shutil.copy(download_path, csv_dest)
+        return csv_dest
+    except Exception as e:
+        print(f"  Hugging Face download failed: {e}. Falling back to GitHub download...")
+        return download_from_git(dest_dir)
+
+
 def fetch_and_store(
     tickers: list[str],
     years: int,
     db_path: str,
     batch_size: int = 20,
-    client: str = "stooq",
+    client: str = "git",
     delay: float = 0.0,
 ) -> None:
     """Download OHLCV for tickers and persist to DuckDB."""
     import time
     
-    end_date = datetime.today()
-    start_date = end_date - timedelta(days=years * 365 + 30)
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = end_date.strftime("%Y-%m-%d")
-
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(db_path))
@@ -155,87 +262,82 @@ def fetch_and_store(
 
     all_vols: list[float] = []
 
-    # Batch download
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i: i + batch_size]
-        print(f"  Downloading batch {i // batch_size + 1}/{math.ceil(len(tickers)/batch_size)}: {batch[:3]}...")
-        
-        if client == "stooq":
-            import pandas_datareader.data as web
-            raw = {}
-            for ticker in batch:
-                stooq_ticker = f"{ticker}.US" if not ticker.endswith(".US") else ticker
-                try:
-                    df_stooq = web.DataReader(stooq_ticker, "stooq", start_str, end_str)
-                    if df_stooq is None or df_stooq.empty:
-                        print(f"    [WARN] stooq returned no rows for {stooq_ticker}")
-                        continue
-                    df_stooq = df_stooq.sort_index()
-                    raw[ticker] = df_stooq
-                except Exception as e:
-                    print(f"    [WARN] stooq failed for {stooq_ticker}: {e}")
-                if delay > 0:
-                    time.sleep(delay)
-        else:
-            print(f"  [WARN] Unsupported client '{client}'; using stooq fallback.")
-            continue
+    print(f"  Ingesting from static dataset using client: {client}...")
+    if client == "kaggle":
+        csv_path = download_from_kaggle(db_path.parent)
+    elif client == "huggingface":
+        csv_path = download_from_huggingface(db_path.parent)
+    else:
+        csv_path = download_from_git(db_path.parent)
 
-        for ticker in batch:
-            try:
-                if client == "stooq":
-                    if ticker not in raw:
-                        continue
-                    df = raw[ticker].copy()
-                    df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
-                else:
-                    continue
+    full_df = pd.read_csv(csv_path)
+    
+    # Rename columns to standard (maps options-IV-SP500 or standard camnugent/sandp500 columns)
+    full_df.columns = [c.lower() for c in full_df.columns]
+    
+    ticker_col = "name" if "name" in full_df.columns else ("ticker" if "ticker" in full_df.columns else None)
+    if not ticker_col:
+        # Fallback to identify ticker column if different
+        for col in ["name", "ticker", "symbol", "code"]:
+            if col in full_df.columns:
+                ticker_col = col
+                break
+    
+    if not ticker_col:
+        raise ValueError("Could not find ticker or symbol column in CSV")
 
-                # Use .columns directly or fallback to standard capitalization
-                if "Close" in df.columns:
-                    df = df.dropna(subset=["Close"])
-                elif "close" in df.columns:
-                    df = df.dropna(subset=["close"])
-                else:
-                    continue
-                    
-                df.index = pd.to_datetime(df.index).normalize()
-
-                # Rename columns
-                df = df.rename(columns={
-                    "Open": "open", "High": "high", "Low": "low",
-                    "Close": "close", "Volume": "volume",
-                })
-                df["adj_close"] = df["close"]
-                df["ticker"] = ticker
-                df["date"] = df.index
-
-                # Derived features
-                df["log_ret"] = np.log(df["close"] / df["close"].shift(1))
-                df["rsi_14"] = compute_rsi(df["close"], 14)
-                df["vol_5d"] = compute_realised_vol(df["log_ret"], 5)
-                df["atr_14"] = compute_atr(df["high"], df["low"], df["close"], 14)
-                df["ret_5d"] = df["close"].pct_change(5)
-                df["ret_20d"] = df["close"].pct_change(20)
-                df["mcap_tier"] = 1  # placeholder; set by market cap tier logic below
-
-                df = df.dropna()
-                all_vols.extend(df["vol_5d"].tolist())
-
-                # Write ohlcv
-                ohlcv_df = df[["ticker", "date", "open", "high", "low", "close", "adj_close", "volume"]].copy()
-                con.execute("DELETE FROM ohlcv WHERE ticker = ?", [ticker])
-                con.execute("INSERT INTO ohlcv SELECT * FROM ohlcv_df")
-
-                # Write derived
-                derived_df = df[["ticker", "date", "log_ret", "rsi_14", "vol_5d", "atr_14", "ret_5d", "ret_20d", "mcap_tier"]].copy()
-                con.execute("DELETE FROM derived WHERE ticker = ?", [ticker])
-                con.execute("INSERT INTO derived SELECT * FROM derived_df")
-
-                print(f"    {ticker}: {len(df)} rows")
-
-            except Exception as e:
-                print(f"    [WARN] {ticker}: {e}")
+    full_df = full_df.rename(columns={
+        ticker_col: "ticker",
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume"
+    })
+    
+    unique_tickers = full_df["ticker"].unique()
+    print(f"  Processing {len(unique_tickers)} tickers from CSV...")
+    
+    for idx, ticker in enumerate(unique_tickers):
+        try:
+            df = full_df[full_df["ticker"] == ticker].copy()
+            df = df.dropna(subset=["close"])
+            if df.empty:
                 continue
+            df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+            df = df.sort_values("date").reset_index(drop=True)
+            
+            df["adj_close"] = df["close"]
+            
+            # Derived features
+            df["log_ret"] = np.log(df["close"] / df["close"].shift(1))
+            df["rsi_14"] = compute_rsi(df["close"], 14)
+            df["vol_5d"] = compute_realised_vol(df["log_ret"], 5)
+            df["atr_14"] = compute_atr(df["high"], df["low"], df["close"], 14)
+            df["ret_5d"] = df["close"].pct_change(5)
+            df["ret_20d"] = df["close"].pct_change(20)
+            df["mcap_tier"] = 1
+            
+            df = df.dropna()
+            if df.empty:
+                continue
+            all_vols.extend(df["vol_5d"].tolist())
+
+            # Write ohlcv
+            ohlcv_df = df[["ticker", "date", "open", "high", "low", "close", "adj_close", "volume"]].copy()
+            con.execute("DELETE FROM ohlcv WHERE ticker = ?", [ticker])
+            con.execute("INSERT INTO ohlcv SELECT * FROM ohlcv_df")
+
+            # Write derived
+            derived_df = df[["ticker", "date", "log_ret", "rsi_14", "vol_5d", "atr_14", "ret_5d", "ret_20d", "mcap_tier"]].copy()
+            con.execute("DELETE FROM derived WHERE ticker = ?", [ticker])
+            con.execute("INSERT INTO derived SELECT * FROM derived_df")
+            
+            if (idx + 1) % 50 == 0:
+                print(f"    Processed {idx + 1}/{len(unique_tickers)} tickers...")
+        except Exception as e:
+            print(f"    [WARN] Failed to process {ticker}: {e}")
+            continue
 
     # Compute regime labels with universe-wide vol percentiles
     if all_vols:
@@ -278,10 +380,10 @@ def main():
                         help="Years of history to download")
     parser.add_argument("--db", default="market-data/market.db",
                         help="Output DuckDB path")
-    parser.add_argument("--client", default="stooq", choices=["stooq"],
-                        help="Data client to use (stooq)")
+    parser.add_argument("--client", default="git", choices=["git", "kaggle", "huggingface"],
+                        help="Data client to use (git, kaggle, or huggingface)")
     parser.add_argument("--delay", type=float, default=0.0,
-                        help="Time delay in seconds between batches/tickers to avoid blocking")
+                        help="Time delay in seconds (ignored for static clients)")
     args = parser.parse_args()
 
     if args.tickers == "sp500":
@@ -289,7 +391,7 @@ def main():
     else:
         tickers = [t.strip() for t in args.tickers.split(",")]
 
-    print(f"Fetching {len(tickers)} tickers, {args.years} years → {args.db} (Client: {args.client}, Delay: {args.delay}s)")
+    print(f"Fetching {len(tickers)} tickers, {args.years} years → {args.db} (Client: {args.client})")
     fetch_and_store(tickers, args.years, args.db, client=args.client, delay=args.delay)
 
 
