@@ -167,11 +167,15 @@ def fetch_and_store(
                 stooq_ticker = f"{ticker}.US" if not ticker.endswith(".US") else ticker
                 try:
                     df_stooq = web.DataReader(stooq_ticker, "stooq", start_str, end_str)
+                    if df_stooq is None or df_stooq.empty:
+                        print(f"    [WARN] stooq returned no rows for {stooq_ticker}")
+                        continue
                     df_stooq = df_stooq.sort_index()
                     raw[ticker] = df_stooq
                 except Exception as e:
                     print(f"    [WARN] stooq failed for {stooq_ticker}: {e}")
-                time.sleep(delay)
+                if delay > 0:
+                    time.sleep(delay)
         else:
             print(f"  [WARN] Unsupported client '{client}'; using stooq fallback.")
             continue
