@@ -121,7 +121,7 @@ def download_from_kaggle(dest_dir: Path) -> Path:
         from kaggle.api.kaggle_api_extended import KaggleApi
         api = KaggleApi()
         api.authenticate()
-        api.dataset_download_files("camnugent/sandp500", path=str(dest_dir), unzip=True)
+        api.dataset_download_files("jsaleeby/sp-500-stock-data", path=str(dest_dir), unzip=True)
         print("  Method A successful!")
         return csv_dest
     except Exception as e:
@@ -136,7 +136,7 @@ def download_from_kaggle(dest_dir: Path) -> Path:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "kagglehub"])
             import kagglehub
 
-        download_path = kagglehub.dataset_download("camnugent/sandp500")
+        download_path = kagglehub.dataset_download("jsaleeby/sp-500-stock-data")
         print(f"  Method B successful! Downloaded to {download_path}")
         
         src_file = Path(download_path) / "all_stocks_5yr.csv"
