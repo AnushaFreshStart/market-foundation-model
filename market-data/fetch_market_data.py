@@ -101,7 +101,7 @@ def fetch_and_store(
     years: int,
     db_path: str,
     batch_size: int = 20,
-    client: str = "yfinance",
+    client: str = "stooq",
     delay: float = 0.0,
 ) -> None:
     """Download OHLCV for tickers and persist to DuckDB."""
@@ -160,24 +160,10 @@ def fetch_and_store(
         batch = tickers[i: i + batch_size]
         print(f"  Downloading batch {i // batch_size + 1}/{math.ceil(len(tickers)/batch_size)}: {batch[:3]}...")
         
-        if client == "yfinance":
-            import yfinance as yf
-            try:
-                raw = yf.download(
-                    batch, start=start_str, end=end_str,
-                    auto_adjust=True, progress=False, threads=True,
-                )
-                time.sleep(delay)
-            except Exception as e:
-                print(f"  [WARN] Download failed for batch: {e}")
-                time.sleep(delay)
-                continue
-        elif client == "stooq":
-            # Stooq doesn't batch well, so we download sequentially
+        if client == "stooq":
             import pandas_datareader.data as web
             raw = {}
             for ticker in batch:
-                # Add .US suffix if missing for Stooq US equities
                 stooq_ticker = f"{ticker}.US" if not ticker.endswith(".US") else ticker
                 try:
                     df_stooq = web.DataReader(stooq_ticker, "stooq", start_str, end_str)
@@ -186,23 +172,19 @@ def fetch_and_store(
                 except Exception as e:
                     print(f"    [WARN] stooq failed for {stooq_ticker}: {e}")
                 time.sleep(delay)
+        else:
+            print(f"  [WARN] Unsupported client '{client}'; using stooq fallback.")
+            continue
 
         for ticker in batch:
             try:
-                if client == "yfinance":
-                    if len(batch) == 1:
-                        df = raw.copy()
-                        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-                    else:
-                        if ticker not in raw.columns.get_level_values(1):
-                            continue
-                        df = raw.xs(ticker, axis=1, level=1).copy()
-                elif client == "stooq":
+                if client == "stooq":
                     if ticker not in raw:
                         continue
                     df = raw[ticker].copy()
-                    # Stooq columns are Open, High, Low, Close, Volume
                     df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
+                else:
+                    continue
 
                 # Use .columns directly or fallback to standard capitalization
                 if "Close" in df.columns:
@@ -292,8 +274,8 @@ def main():
                         help="Years of history to download")
     parser.add_argument("--db", default="market-data/market.db",
                         help="Output DuckDB path")
-    parser.add_argument("--client", default="yfinance", choices=["yfinance", "stooq"],
-                        help="Data client to use (yfinance or stooq)")
+    parser.add_argument("--client", default="stooq", choices=["stooq"],
+                        help="Data client to use (stooq)")
     parser.add_argument("--delay", type=float, default=0.0,
                         help="Time delay in seconds between batches/tickers to avoid blocking")
     args = parser.parse_args()
