@@ -304,7 +304,7 @@ def fetch_and_store(
             df = df.dropna(subset=["close"])
             if df.empty:
                 continue
-            df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+            df["date"] = pd.to_datetime(df["date"]).dt.date
             df = df.sort_values("date").reset_index(drop=True)
             
             df["adj_close"] = df["close"]
