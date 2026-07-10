@@ -1,12 +1,15 @@
 """
-build_market_sequences.py — Build 60-Day Rolling Sequences from market.db
-==========================================================================
+build_market_sequences.py — Build 60-Day Rolling Sequences from market.db (GPU-Accelerated)
+============================================================================================
 Reads derived + regime_labels from market.db, fits MarketTokenizer,
-builds per-ticker 60-day rolling windows, writes market_sequences.parquet.
+builds per-ticker 60-day rolling windows with GPU quantile binning,
+writes market_sequences.parquet.
+
+Uses PyTorch GPU acceleration for vectorized quantile encoding (1.78M+ encodes).
 
 Usage:
     python build_market_sequences.py
-    python build_market_sequences.py --db market-data/market.db --out market-tokenizer-result/
+    python build_market_sequences.py --db market-data/market.db --out market-tokenizer-result/ --gpu
 """
 
 from __future__ import annotations
@@ -18,20 +21,90 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import duckdb
+import torch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from market_tokenizer import MarketTokenizer, MAX_SEQ_LEN, STEP_WIDTH
 
 
+def _get_device(use_gpu: bool = True) -> torch.device:
+    """Get GPU device if available, else CPU."""
+    if use_gpu and torch.cuda.is_available():
+        device = torch.device("cuda")
+        print(f"  GPU enabled: {torch.cuda.get_device_name(0)}")
+        return device
+    else:
+        print("  Using CPU (no GPU or --gpu not specified)")
+        return torch.device("cpu")
+
+
+def _encode_window_gpu(
+    window: pd.DataFrame,
+    tok: MarketTokenizer,
+    device: torch.device,
+) -> np.ndarray:
+    """
+    GPU-accelerated vectorized quantile encoding.
+    Encodes all 60 days at once instead of per-row.
+    
+    Returns: tokens array (60, 5) of token IDs
+    """
+    n_rows = len(window)
+    tokens = torch.zeros((MAX_SEQ_LEN, STEP_WIDTH), dtype=torch.int64, device=device)
+    
+    # Extract feature columns for quantile binning
+    features = ["rsi_14", "vol_5d", "ret_5d", "mcap_tier", "atr_14"]
+    feature_data = window[features].values  # (n_rows, 5)
+    
+    # Convert to torch tensor on GPU
+    x = torch.from_numpy(feature_data).float().to(device)  # (n_rows, 5)
+    
+    # Get quantile bins from tokenizer for each feature
+    # tok.quantiles dict: {feature_name: [q0, q1, ..., q9]}
+    quantile_ids = torch.zeros((n_rows, 5), dtype=torch.int64, device=device)
+    
+    feature_col_map = {f: i for i, f in enumerate(features)}
+    for col_idx, feat in enumerate(features):
+        if feat in tok.quantiles:
+            qbins = torch.from_numpy(np.array(tok.quantiles[feat], dtype=np.float32)).to(device)
+            # Searchsorted: which bin does each value fall into
+            bins = torch.searchsorted(qbins, x[:, col_idx], right=False)
+            # Clamp to valid range [0, len(qbins)-1]
+            bins = torch.clamp(bins, 0, len(qbins) - 1)
+            # Convert bin index to token ID (offset by regime vocab)
+            quantile_ids[:, col_idx] = bins + 12  # 5 special + 7 regime tokens
+    
+    # Add regime tokens (position 0)
+    regime_col = window["regime"].values
+    regime_ids = []
+    for r in regime_col:
+        rid = tok.regime_vocab.get(r, tok.regime_vocab.get("FLAT", 5))
+        regime_ids.append(rid)
+    regime_ids = torch.tensor(regime_ids, dtype=torch.int64, device=device)
+    
+    # Assemble tokens: [regime_id, rsi_id, vol_id, ret_id, mcap_id] per step
+    for t in range(min(n_rows, MAX_SEQ_LEN)):
+        tokens[t, 0] = regime_ids[t]
+        tokens[t, 1:] = quantile_ids[t]
+    
+    # Mark BOS at position 0
+    tokens[0, 0] = tok.bos_id
+    
+    return tokens.cpu().numpy()
+
+
 def build_sequences(
     db_path: str,
     out_dir: str,
     min_seq_len: int = 20,
+    use_gpu: bool = False,
 ) -> None:
     db_path = Path(db_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    device = _get_device(use_gpu)
 
     print(f"Connecting to {db_path}...")
     con = duckdb.connect(str(db_path), read_only=True)
@@ -67,10 +140,11 @@ def build_sequences(
     df["obs_year"] = df["date"].dt.year
 
     tickers = df["ticker"].unique()
-    print(f"  Building sequences for {len(tickers)} tickers...")
+    print(f"  Building sequences for {len(tickers)} tickers (GPU={use_gpu})...")
 
     records = []
     step_size = 20  # 1-month sliding window
+    total_windows = 0
 
     for ticker in tickers:
         tdf = df[df["ticker"] == ticker].sort_values("date").reset_index(drop=True)
@@ -90,17 +164,8 @@ def build_sequences(
             end_date = window["date"].iloc[-1].strftime("%Y-%m-%d")
             seq_id = f"{ticker}_{end_date}"
 
-            # Encode tokens: BOS + steps
-            tokens = np.zeros((MAX_SEQ_LEN, STEP_WIDTH), dtype=np.int64)
-
-            for t, row in window.iterrows():
-                if t >= MAX_SEQ_LEN:
-                    break
-                step_ids = tok.encode_step(row.to_dict())
-                tokens[t] = step_ids
-
-            # Mark BOS at position 0 if space
-            tokens[0, 0] = tok.bos_id
+            # GPU-accelerated encoding
+            tokens = _encode_window_gpu(window, tok, device)
 
             had_crash  = (window["regime"] == "CRASH").any()
             had_gap    = (window["regime"] == "GAP").any()
@@ -116,15 +181,16 @@ def build_sequences(
                 "had_crash":    bool(had_crash),
                 "had_gap":      bool(had_gap),
             })
+            total_windows += 1
 
     seq_df = pd.DataFrame(records)
     out_path = out_dir / "market_sequences.parquet"
     seq_df.to_parquet(str(out_path), index=False)
-    print(f"  OK Sequences → {out_path.name}  ({len(seq_df):,} tickers)")
+    print(f"  OK Sequences → {out_path.name}  ({len(seq_df):,} sequences)")
 
     # Write stats JSON
     stats = {
-        "n_tickers":      int(len(seq_df)),
+        "n_sequences":    int(len(seq_df)),
         "vocab_size":     tok.vocab_size,
         "max_seq_len":    MAX_SEQ_LEN,
         "step_width":     STEP_WIDTH,
@@ -133,6 +199,7 @@ def build_sequences(
         "crash_rate":     float(seq_df["had_crash"].mean()),
         "gap_rate":       float(seq_df["had_gap"].mean()),
         "obs_year_range": [int(seq_df["obs_year_min"].min()), int(seq_df["obs_year_max"].max())],
+        "gpu_accelerated": use_gpu,
     }
     stats_path = out_dir / "sequence_stats.json"
     stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
@@ -141,12 +208,13 @@ def build_sequences(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build market sequences parquet")
-    parser.add_argument("--db",  default="market-data/market.db")
-    parser.add_argument("--out", default="market-tokenizer-result")
-    parser.add_argument("--min-seq-len", type=int, default=20)
+    parser = argparse.ArgumentParser(description="Build market sequences parquet (GPU-accelerated)")
+    parser.add_argument("--db",  default="market-data/market.db", help="Path to market.db")
+    parser.add_argument("--out", default="market-tokenizer-result", help="Output directory")
+    parser.add_argument("--min-seq-len", type=int, default=20, help="Minimum sequence length")
+    parser.add_argument("--gpu", action="store_true", help="Enable GPU acceleration (if available)")
     args = parser.parse_args()
-    build_sequences(args.db, args.out, args.min_seq_len)
+    build_sequences(args.db, args.out, args.min_seq_len, args.gpu)
 
 
 if __name__ == "__main__":
