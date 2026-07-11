@@ -26,9 +26,9 @@ import requests
 sys.path.append(str(Path(__file__).parent.parent))
 
 try:
-    from train_foundation_model.config import TrainingConfig
-    from train_foundation_model.models import build_model
-    from market_tokenizer.market_tokenizer import MarketTokenizer
+    from train-foundation-model.config import TrainingConfig
+    from train-foundation-model.models import build_model
+    from market-tokenizer.market-tokenizer import MarketTokenizer
 except ImportError as e:
     print(f"Error importing modules: {e}")
     print("Ensure you are running from the market-foundation-model-workspace root.")
