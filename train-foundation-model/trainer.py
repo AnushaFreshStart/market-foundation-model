@@ -155,6 +155,7 @@ class CreditModelTrainer:  # name kept for interface parity
             cfg.sequences_path, cfg.tokenizer_path,
             mode=stage, label_maps=label_maps,
             patch_size=cfg.patch_size,
+            max_seq_len=cfg.max_seq_len,
         )
         train_ds, val_ds = ds.oot_split(train_year_max=2023)
 
@@ -311,6 +312,7 @@ class CreditModelTrainer:  # name kept for interface parity
         ds = MarketSequenceDataset(
             cfg.sequences_path, cfg.tokenizer_path,
             mode="finetune", label_maps=label_maps,
+            max_seq_len=cfg.max_seq_len,
         )
         loader = self._build_loader(ds, shuffle=False)
 

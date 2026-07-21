@@ -55,6 +55,7 @@ class MarketSequenceDataset(Dataset):
         label_maps: dict[str, dict[str, int]] | None = None,
         patch_size: int = 5,
         seed: int = 42,
+        max_seq_len: int = MAX_SEQ_LEN,
     ):
         import pyarrow.parquet as pq
 
@@ -63,11 +64,12 @@ class MarketSequenceDataset(Dataset):
         self.mode       = mode
         self.label_maps = label_maps or {"direction": {}, "vol": {}}
         self.patch_size = patch_size
+        self.max_seq_len = max_seq_len
         self.rng        = random.Random(seed)
 
         table   = pq.read_table(str(self.path))
         self.df = table.to_pandas()
-        print(f"  MarketDataset: {len(self.df):,} tickers, mode={mode}")
+        print(f"  MarketDataset: {len(self.df):,} tickers, mode={mode}, max_seq_len={max_seq_len}")
 
     def __len__(self) -> int:
         return len(self.df)
@@ -78,31 +80,33 @@ class MarketSequenceDataset(Dataset):
         seq_len   = int(row["seq_len"])
         flat      = list(row["seq_tokens"])
 
-        tokens    = np.array(flat, dtype=np.int64).reshape(MAX_SEQ_LEN, STEP_WIDTH)
-        attn_mask = np.zeros(MAX_SEQ_LEN, dtype=np.int64)
-        attn_mask[:seq_len] = 1
+        flat = flat[: self.max_seq_len * STEP_WIDTH]
+        tokens    = np.array(flat, dtype=np.int64).reshape(-1, STEP_WIDTH)
+        attn_mask = np.zeros(self.max_seq_len, dtype=np.int64)
+        attn_mask[: min(seq_len, self.max_seq_len)] = 1
 
         if self.mode == "pretrain":
-            input_ids, labels = self._apply_patch_masking(tokens, seq_len)
+            input_ids, labels = self._apply_patch_masking(tokens, min(seq_len, self.max_seq_len))
             return {
                 "input_ids":      torch.from_numpy(input_ids),
                 "attention_mask": torch.from_numpy(attn_mask),
                 "labels":         torch.from_numpy(labels),
                 "loan_id":        entity_id,   # keep key name for collate_fn compat
-                "seq_len":        seq_len,
+                "seq_len":        min(seq_len, self.max_seq_len),
             }
 
         elif self.mode == "joint":
             input_ids = tokens.copy()
-            targets   = np.full(MAX_SEQ_LEN, -100, dtype=np.int64)
-            for t in range(min(seq_len - 1, MAX_SEQ_LEN - 1)):
+            targets   = np.full(self.max_seq_len, -100, dtype=np.int64)
+            eff_len   = min(seq_len - 1, self.max_seq_len - 1)
+            for t in range(eff_len):
                 targets[t] = tokens[t + 1, EVENT_POS]
             return {
                 "input_ids":      torch.from_numpy(input_ids),
                 "attention_mask": torch.from_numpy(attn_mask),
                 "labels":         torch.from_numpy(targets),
                 "loan_id":        entity_id,
-                "seq_len":        seq_len,
+                "seq_len":        min(seq_len, self.max_seq_len),
             }
 
         else:  # finetune
@@ -115,7 +119,7 @@ class MarketSequenceDataset(Dataset):
                 "direction_label":  torch.tensor(direction_label, dtype=torch.long),
                 "vol_label":        torch.tensor(vol_label, dtype=torch.long),
                 "loan_id":          entity_id,
-                "seq_len":          seq_len,
+                "seq_len":          min(seq_len, self.max_seq_len),
             }
 
     def _apply_patch_masking(
@@ -123,7 +127,7 @@ class MarketSequenceDataset(Dataset):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Mask 15% of patches (groups of patch_size steps)."""
         input_ids = tokens.copy()
-        labels    = np.full(MAX_SEQ_LEN, -100, dtype=np.int64)
+        labels    = np.full(self.max_seq_len, -100, dtype=np.int64)
 
         n_patches = max(1, seq_len // self.patch_size)
 
@@ -172,6 +176,8 @@ class _SubsetDataset(Dataset):
         self.df      = subset_df
         self.mode    = parent.mode
         self.tok     = parent.tok
+        self.max_seq_len = parent.max_seq_len
+        self.patch_size = parent.patch_size
 
     def __len__(self):
         return len(self.df)
@@ -182,30 +188,32 @@ class _SubsetDataset(Dataset):
         seq_len   = int(row["seq_len"])
         flat      = list(row["seq_tokens"])
 
-        tokens    = np.array(flat, dtype=np.int64).reshape(MAX_SEQ_LEN, STEP_WIDTH)
-        attn_mask = np.zeros(MAX_SEQ_LEN, dtype=np.int64)
-        attn_mask[:seq_len] = 1
+        flat = flat[: self.max_seq_len * STEP_WIDTH]
+        tokens    = np.array(flat, dtype=np.int64).reshape(-1, STEP_WIDTH)
+        attn_mask = np.zeros(self.max_seq_len, dtype=np.int64)
+        attn_mask[: min(seq_len, self.max_seq_len)] = 1
 
         if self.mode == "pretrain":
-            input_ids, labels = self._parent._apply_patch_masking(tokens, seq_len)
+            input_ids, labels = self._parent._apply_patch_masking(tokens, min(seq_len, self.max_seq_len))
             return {
                 "input_ids":      torch.from_numpy(input_ids),
                 "attention_mask": torch.from_numpy(attn_mask),
                 "labels":         torch.from_numpy(labels),
                 "loan_id":        entity_id,
-                "seq_len":        seq_len,
+                "seq_len":        min(seq_len, self.max_seq_len),
             }
         elif self.mode == "joint":
             input_ids = tokens.copy()
-            targets   = np.full(MAX_SEQ_LEN, -100, dtype=np.int64)
-            for t in range(min(seq_len - 1, MAX_SEQ_LEN - 1)):
+            targets   = np.full(self.max_seq_len, -100, dtype=np.int64)
+            eff_len   = min(seq_len - 1, self.max_seq_len - 1)
+            for t in range(eff_len):
                 targets[t] = tokens[t + 1, EVENT_POS]
             return {
                 "input_ids":      torch.from_numpy(input_ids),
                 "attention_mask": torch.from_numpy(attn_mask),
                 "labels":         torch.from_numpy(targets),
                 "loan_id":        entity_id,
-                "seq_len":        seq_len,
+                "seq_len":        min(seq_len, self.max_seq_len),
             }
         else:
             input_ids       = tokens.copy()
@@ -217,7 +225,7 @@ class _SubsetDataset(Dataset):
                 "direction_label":  torch.tensor(direction_label, dtype=torch.long),
                 "vol_label":        torch.tensor(vol_label, dtype=torch.long),
                 "loan_id":          entity_id,
-                "seq_len":          seq_len,
+                "seq_len":          min(seq_len, self.max_seq_len),
             }
 
     @property

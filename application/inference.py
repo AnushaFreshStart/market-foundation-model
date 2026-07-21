@@ -24,16 +24,28 @@ import requests
 
 # Add the parent directory to sys.path to import training/tokenization modules
 sys.path.append(str(Path(__file__).parent.parent))
+current_dir = Path(__file__).resolve().parent
+
+project_root = current_dir.parent
+
+path1 = project_root / "train-foundation-model"
+path2 = project_root / "market-tokenizer"
+
+sys.path.append(str(path1))
+sys.path.append(str(path2))
+
+import config
+import models
+import market_tokenizer
 
 try:
-    from train-foundation-model.config import TrainingConfig
-    from train-foundation-model.models import build_model
-    from market-tokenizer.market-tokenizer import MarketTokenizer
+    from config import TrainingConfig
+    from models import build_model
+    from market_tokenizer import MarketTokenizer
 except ImportError as e:
     print(f"Error importing modules: {e}")
     print("Ensure you are running from the market-foundation-model-workspace root.")
     sys.exit(1)
-
 
 # ---------------------------------------------------------------------------
 # Technical indicator helpers (from fetch_market_data.py)

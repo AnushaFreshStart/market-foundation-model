@@ -117,6 +117,8 @@ class TokenEmbedding(nn.Module):
             (B, T, embed_dim)
         """
         B, T, _ = x.shape
+        T = min(T, self.pos_emb.num_embeddings)
+        x = x[:, :T, :]
         emb = sum(self.token_embs[i](x[:, :, i]) for i in range(self.step_width))
         pos = self.pos_emb(torch.arange(T, device=x.device).unsqueeze(0))
         return self.dropout(self.layer_norm(emb + pos))
